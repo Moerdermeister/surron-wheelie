@@ -414,7 +414,7 @@ function drawBikeSprite(g,b,comp,sp){
   // Scooter: am tiefsten Pixel (Reifen unten) auf den Boden setzen; Bikes per Radmitte
   const baseY=scooter?(42-(sp.h-axleY)*s):(42-wheelRlocal);
   g.save();
-  g.translate(0,baseY+(comp||0)*0.5);   // Aufhängung als sanftes Wippen
+  g.translate(0,baseY+(comp||0)*0.7);   // Aufhängung: plüschiges Wippen
   g.scale(s,s);
   g.translate(-midX,-axleY);
   g.imageSmoothingEnabled=true;
@@ -558,7 +558,7 @@ function audioInit(){
     Audio_.on=true;
   }catch(e){}
 }
-function blip(freq,dur,type,vol){if(!Audio_.on)return;const a=Audio_.ctx;const o=a.createOscillator();const g=a.createGain();
+function blip(freq,dur,type,vol){if(!Audio_.on||(bike&&bike.crashed))return;const a=Audio_.ctx;const o=a.createOscillator();const g=a.createGain();
   o.type=type||'sine';o.frequency.value=freq;g.gain.value=0;o.connect(g);g.connect(Audio_.master);
   const t=a.currentTime;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(vol||.25,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+dur);
   o.start(t);o.stop(t+dur+.02);}
@@ -570,18 +570,22 @@ function sfxCrash(){if(!Audio_.on)return;const a=Audio_.ctx;const b=a.createBuff
   const lp=a.createBiquadFilter();lp.type='lowpass';lp.frequency.value=900;s.connect(lp);lp.connect(g);g.connect(Audio_.master);s.start();}
 function audioUpdate(b){
   if(!Audio_.on)return;const a=Audio_.ctx;const t=a.currentTime;
+  const dead=!b||b.crashed;
   const sp=Math.abs(b?b.vx:0),thr=keys.throttle?1:0;
   const f=60+sp*7+(run&&run.nitroActive?80:0);
   Audio_.eng.frequency.setTargetAtTime(f,t,.05);
-  Audio_.engGain.gain.setTargetAtTime(b&&!b.crashed?(.05+thr*.10+sp*.004):0,t,.08);
+  Audio_.engGain.gain.setTargetAtTime(dead?0:(.05+thr*.10+sp*.004),t,dead?.03:.08);
   Audio_.whine.frequency.setTargetAtTime(300+sp*30,t,.05);
-  Audio_.whineGain.gain.setTargetAtTime(b&&!b.crashed?(.012+sp*.0016):0,t,.08);
+  Audio_.whineGain.gain.setTargetAtTime(dead?0:(.012+sp*.0016),t,dead?.03:.08);
   let sv=0;
-  if(run&&run.mode==='police'&&cops.length){let near=1e9;for(const c of cops)near=Math.min(near,Math.abs(c.x-b.cx));
+  if(!dead&&run&&run.mode==='police'&&cops.length){let near=1e9;for(const c of cops)near=Math.min(near,Math.abs(c.x-b.cx));
     sv=clamp(1-near/900,0,1)*.10;}
-  Audio_.sirenGain.gain.setTargetAtTime(sv,t,.1);
+  Audio_.sirenGain.gain.setTargetAtTime(sv,t,dead?.03:.1);
   if(sv>0){const ph=(t*2)%1;Audio_.sirOsc.frequency.setTargetAtTime(ph<.5?760:560,t,.02);}
 }
+function audioStop(){if(!Audio_.on)return;const a=Audio_.ctx,t=a.currentTime;
+  try{Audio_.engGain.gain.cancelScheduledValues(t);Audio_.whineGain.gain.cancelScheduledValues(t);Audio_.sirenGain.gain.cancelScheduledValues(t);
+    Audio_.engGain.gain.setValueAtTime(0,t);Audio_.whineGain.gain.setValueAtTime(0,t);Audio_.sirenGain.gain.setValueAtTime(0,t);}catch(_){}}
 
 /* ============================ STATE ============================ */
 const ST={MENU:0,PLAY:1,OVER:2};let state=ST.MENU;
@@ -605,7 +609,7 @@ function newBike(){
   const sx=200,sy=groundY(sx)-AX-R;
   bike={def,p,cx:sx,cy:sy,vx:0,vy:0,tilt:0,angVel:0,rearDown:true,frontDown:true,onGround:true,
     wheelSpin:0,airTime:0,rotAccum:0,airStartStand:false,airMaxY:0,crashed:false,crashTimer:0,noHand:0,
-    sus:0,susV:0,prevGY:groundY(sx),wTarget:0,idle:0,noWtimer:999,prevTilt:0,trick:null,trickCD:120,
+    sus:0,susV:0,prevGY:groundY(sx),wTarget:0,idle:0,noWtimer:999,prevTilt:0,trick:null,trickCD:120,pitch:0,
     px:sx,py:sy,ptilt:0,psus:0};
 }
 function pickMission(mode){
@@ -794,10 +798,10 @@ function step(){
       const tol=1.15+b.p.grip*0.7;            // sehr verzeihend
       if(diff>tol){crash();return;}
       cam.shake=Math.min(10,b.vy*0.5);
-      b.susV+=Math.min(18,Math.max(0,b.vy)*1.1);   // Federung schluckt Landung weich
+      b.susV+=Math.min(26,Math.max(0,b.vy)*1.25);   // Federung schluckt Landung sehr weich
       b.tilt=lerp(b.tilt,slope,0.6);b.angVel=0;awardAir();
     }
-    if(b.vy>0){b.susV+=Math.min(10,b.vy*0.6);b.vy=0;}
+    if(b.vy>0){b.susV+=Math.min(14,b.vy*0.7);b.vy=0;}
     rearDown=true;frontDown=(penF>-R*0.7);b.onGround=true;b.airTime=0;
   }else{
     b.onGround=false;
@@ -828,19 +832,33 @@ function step(){
     b.angVel=0;
     const f2=wheelPos(b,1);frontDown=(f2.y+R)>=groundY(f2.x)-3;
     // Vorderrad setzt nach Wheelie wieder auf -> Federung sackt ein und federt zurück
-    if(frontDown&&!b.frontDown&&b.prevTilt>0.5){b.susV+=Math.min(17,b.prevTilt*9);cam.shake=Math.max(cam.shake,1.5);}
+    if(frontDown&&!b.frontDown&&b.prevTilt>0.5){b.susV+=Math.min(22,b.prevTilt*11);cam.shake=Math.max(cam.shake,1.5);}
     // Heck/Sattel berührt den Boden -> Crash (zu weit nach hinten)
     if(b.tilt>1.48){crash();return;}
     if(b.tilt<-1.55){crash();return;}
   }else{b.wTarget=b.tilt;b.noWtimer=0;}
   b.rearDown=rearDown;b.frontDown=frontDown;
-  // ---- Federung simulieren: Spring/Damper zu einem Ruhe-Ziel ----
+  // ---- Federung simulieren: weiche Spring/Damper zu einem Ruhe-Ziel (sehr soft) ----
   let rest=b.onGround?-2:-3;
-  b.susV+=(-0.085*(b.sus-rest)-0.22*b.susV);
-  b.sus=clamp(b.sus+b.susV,-4,18);
+  if(b.onGround){const spd=Math.min(1,Math.abs(b.vx)/5);
+    if(keys.throttle)rest+=7*spd;   // Heck sackt unter Last (squat)
+    if(keys.brake)rest-=5;          // beim Bremsen ausfedern / Gewicht nach vorn
+  }
+  b.susV+=(-0.050*(b.sus-rest)-0.150*b.susV);   // weiche Feder, sanfte Dämpfung
+  b.sus=clamp(b.sus+b.susV,-9,22);              // grosser, plüschiger Federweg
   // Bodenwellen schlucken
-  if(b.onGround){const gy=groundY(b.cx);const d=gy-b.prevGY;if(d<-1)b.susV+=Math.min(8,-d*0.4);b.prevGY=gy;}
+  if(b.onGround){const gy=groundY(b.cx);const d=gy-b.prevGY;if(d<-1)b.susV+=Math.min(13,-d*0.6);b.prevGY=gy;
+    b.susV+=Math.sin(b.idle*1.25)*0.07;          // Motor-Vibration: Federung lebt immer
+  }
   else b.prevGY=groundY(b.cx);
+  // ---- Sichtbarer Lastwechsel-Nick: Bremse -> Nase taucht, Gas -> Nase hebt ----
+  let pt=0;
+  if(b.onGround&&Math.abs(b.tilt)<0.4){const spd=Math.min(1,Math.abs(b.vx)/5);
+    if(keys.brake)pt+=0.06;
+    else if(keys.throttle)pt-=0.04*spd;
+    pt+=clamp(b.susV*0.010,-0.05,0.05);          // Federbewegung kippt die Karosserie leicht
+  }
+  b.pitch+=((pt)-b.pitch)*0.12;
 
   for(const o of obstacles){
     const top=groundY(o.x)-o.h, halfW=o.w/2+2;
@@ -1459,10 +1477,10 @@ function drawBikeWorld(b,rx,ry,rt,rsus){
     const A=Math.abs((sp.rx-midX)*s);
     corr=clamp(R*(1-Math.cos(rt))-(A-WB/2)*Math.sin(rt),-30,30);}
   ctx.translate(0,corr);
-  ctx.rotate(-rt);
-  const comp=clamp(rsus||0,-4,18)*0.9;
+  ctx.rotate(-rt+(b.pitch||0));
+  const comp=clamp(rsus||0,-9,22)*0.92;
   drawBike(ctx,b,comp);
-  ctx.save();ctx.translate(sp&&!sct?7:0,(sp&&!sct?-1:0)+comp*(sp?0.5:1));drawRider(ctx,b);ctx.restore();
+  ctx.save();ctx.translate(sp&&!sct?7:0,(sp&&!sct?-1:0)+comp*(sp?0.7:1));drawRider(ctx,b);ctx.restore();
   ctx.restore();
 }
 
@@ -1528,7 +1546,7 @@ function endRun(crashed,finished){
   else{title='RUN OVER';tag=crashed?'Crashed':'Run over';}
   el('overTag').textContent=tag;el('overTitle').textContent=title;
   el('oScore').textContent=fs;el('oDist').textContent=Math.floor(run.dist)+' m';el('oCoins').textContent='+'+Math.floor(run.coins);el('oTricks').textContent=run.tricks;
-  el('hud').classList.add('hide');el('touch').classList.remove('on');el('raceBar').classList.remove('on');el('ttClock').classList.remove('on');showScreen('scrOver');
+  el('hud').classList.add('hide');el('touch').classList.remove('on');el('raceBar').classList.remove('on');el('ttClock').classList.remove('on');audioStop();showScreen('scrOver');
 }
 
 /* ============================ SHOP / UI ============================ */
@@ -1742,7 +1760,7 @@ function launchFromCalc(){el('calc').classList.add('hide');el('emg').classList.r
 function openCalc(){calcReset();el('calc').classList.remove('hide');el('emg').classList.add('hide');checkRotate();}
 function emergencyExit(){
   state=ST.MENU;el('hud').classList.add('hide');el('touch').classList.remove('on');
-  if(Audio_.on){try{Audio_.engGain.gain.value=0;Audio_.whineGain.gain.value=0;Audio_.sirenGain.gain.value=0;}catch(_){}}
+  audioStop();
   showScreen('scrTitle');openCalc();
   try{window.open('https://schabi.ch/dashboard','_blank','noopener');}catch(_){}
 }
